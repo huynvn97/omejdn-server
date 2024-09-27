@@ -1,0 +1,39 @@
+<svg width="1440" height="1024" viewBox="0 0 1440 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_133_12120)">
+<rect width="1440" height="1024" fill="url(#paint0_linear_133_12120)"/>
+<line x1="120.5" y1="2.18557e-08" x2="120.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="360.5" y1="2.18557e-08" x2="360.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="960.5" y1="2.18557e-08" x2="960.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="600.5" y1="2.18557e-08" x2="600.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="1200.5" y1="2.18557e-08" x2="1200.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="240.5" y1="2.18557e-08" x2="240.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="840.5" y1="2.18557e-08" x2="840.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="480.5" y1="2.18557e-08" x2="480.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="1080.5" y1="2.18557e-08" x2="1080.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="720.5" y1="2.18557e-08" x2="720.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line x1="1320.5" y1="2.18557e-08" x2="1320.5" y2="1024" stroke="white" stroke-opacity="0.3"/>
+<line y1="895.5" x2="1440" y2="895.5" stroke="white" stroke-opacity="0.3"/>
+<line y1="639.5" x2="1440" y2="639.5" stroke="white" stroke-opacity="0.3"/>
+<line y1="255.5" x2="1440" y2="255.5" stroke="white" stroke-opacity="0.3"/>
+<line y1="767.5" x2="1440" y2="767.5" stroke="white" stroke-opacity="0.3"/>
+<line y1="383.5" x2="1440" y2="383.5" stroke="white" stroke-opacity="0.3"/>
+<line y1="511.5" x2="1440" y2="511.5" stroke="white" stroke-opacity="0.3"/>
+<line y1="128.5" x2="1440" y2="128.5" stroke="white" stroke-opacity="0.3"/>
+<circle cx="240" cy="129" r="14" fill="white" fill-opacity="0.6"/>
+<circle cx="960" cy="256" r="14" fill="white" fill-opacity="0.5"/>
+<circle cx="602" cy="896" r="14" fill="white" fill-opacity="0.25"/>
+<circle cx="120" cy="768" r="10" fill="white" fill-opacity="0.25"/>
+<circle cx="1320" cy="129" r="10" fill="white" fill-opacity="0.4"/>
+<circle cx="1080" cy="768" r="10" fill="white" fill-opacity="0.4"/>
+<circle cx="360" cy="640" r="10" fill="white" fill-opacity="0.6"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_133_12120" x1="720" y1="0" x2="720" y2="1024" gradientUnits="userSpaceOnUse">
+<stop stop-color="#E6EBFF"/>
+<stop offset="1" stop-color="#9BF8FF"/>
+</linearGradient>
+<clipPath id="clip0_133_12120">
+<rect width="1440" height="1024" fill="white"/>
+</clipPath>
+</defs>
+</svg>

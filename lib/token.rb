@@ -3,6 +3,8 @@
 require_relative './keys'
 require_relative './config'
 require_relative './client'
+require 'jwt'
+require 'securerandom'
 
 # A helper for building JWT access tokens and ID tokens
 class Token
@@ -23,13 +25,14 @@ class Token
       'exp' => now + base_config.dig('access_token', 'expiration'),
       'client_id' => client.client_id
     }
-    PluginLoader.fire 'TOKEN_CREATED_ACCESS_TOKEN', binding
+    PluginLoader.load_plugins('claim_mapper').each do |mapper|
+      token.merge!(mapper.map_to_access_token(client, user, scopes, claims['access_token'], resources))
+    end
     reserved = {}
     reserved['userinfo_req_claims'] = claims['userinfo'] unless (claims['userinfo'] || {}).empty?
     token['omejdn_reserved'] = reserved unless reserved.empty?
-    jwks = Keys.load_keys(KEYS_TARGET_OMEJDN, 'omejdn', create: true)
-    key = jwks.find { |k| k[:use] == 'sig' && k.private? }
-    JWT.encode token, key.keypair, key[:alg], { typ: 'at+jwt', kid: key[:kid] }
+    key_pair = Keys.load_skey
+    JWT.encode token, key_pair['sk'], 'RS256', { typ: 'at+jwt', kid: key_pair['kid'] }
   end
 
   # Builds a JWT ID token for client including user attributes
@@ -46,20 +49,19 @@ class Token
       'auth_time' => user.auth_time,
       'nonce' => nonce
     }.compact
-    PluginLoader.fire 'TOKEN_CREATED_ID_TOKEN', binding
-    jwks = Keys.load_keys KEYS_TARGET_OMEJDN, 'omejdn', create: true
-    key = jwks.find { |k| k[:use] == 'sig' && k.private? }
-    JWT.encode token, key.keypair, key[:alg], { typ: 'JWT', kid: key[:kid] }
+    PluginLoader.load_plugins('claim_mapper').each do |mapper|
+      token.merge!(mapper.map_to_id_token(client, user, scopes, claims['id_token']))
+    end
+    key_pair = Keys.load_skey
+    JWT.encode token, key_pair['sk'], 'RS256', { typ: 'JWT', kid: key_pair['kid'] }
   end
 
   # Decodes an access token or id token for inspection
   def self.decode(token, endpoint = nil)
     raise 'No token found' if token.nil? | token.empty?
 
-    jwks = Keys.load_all_keys(KEYS_TARGET_OMEJDN)
-    jwks.select! { |k| k[:use] == 'sig' }
-    args = { algorithms: jwks.keys.map { |k| k[:alg] }.uniq, jwks: jwks }
+    args = { algorithm: Config.base_config.dig('access_token', 'algorithm') }
     args.merge!({ aud: "#{Config.base_config['front_url']}#{endpoint}", verify_aud: true }) if endpoint
-    JWT.decode(token, nil, true, args)[0]
+    JWT.decode(token, Keys.load_skey['sk'].public_key, true, args)[0]
   end
 end

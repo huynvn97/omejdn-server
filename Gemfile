@@ -7,6 +7,7 @@ group :omejdn do
   gem 'bcrypt'
   gem 'haml'
   gem 'jwt'
+  gem 'openssl'
   gem 'sinatra'
   gem 'sinatra-contrib'
   gem 'thin'
@@ -14,10 +15,8 @@ end
 
 # Necessary Gems for Plugins
 group :plugins do
-  gem 'json-schema'
   gem 'net-ldap'
-  gem 'pg'
-  gem 'rqrcode'
+  gem 'sqlite3'
 end
 
 # Development only

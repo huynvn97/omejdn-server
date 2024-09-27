@@ -31,7 +31,7 @@ _Defaults to http://localhost:4567 for testing purposes_
 ### Front URL
 
 ```
-front_url: http://example.org/auth
+issuer: http://example.org/auth
 ```
 
 The prefix to Omejdn's endpoints.

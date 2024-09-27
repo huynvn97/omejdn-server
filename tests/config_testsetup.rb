@@ -1,115 +1,66 @@
 # frozen_string_literal: true
 
-# We want to intercept any storage request Omejdn makes,
-# so we do not actually overwrite any data.
-# To do this, we first edit ENV so Omejdn loads our custom plugins file,
-# which disables writing to disk.
-# Tests may add additional plugins
-plugin_files = ENV['OMEJDN_PLUGINS']&.split(':') || []
-plugin_files << 'tests/test_resources/setup.yml'
-ENV.clear # Fresh ENV
-ENV['OMEJDN_PLUGINS'] = plugin_files.join(':')
+# Always load this BEFORE omejdn.rb
 
-# Next we write our own handler for storage requests,
-# which simply saves any data in this class
-require_relative '../lib/plugins'
-class TestDB
-  class << self; attr_accessor :config, :keys end
-  @config = {} # The Config DB
-  @keys = {} # The Keys DB
+require 'yaml'
 
-  def self.write_config(bind)
-    section = bind.local_variable_get :section
-    data    = bind.local_variable_get :data
-    @config[section] = data
-  end
-
-  def self.read_config(bind)
-    section  = bind.local_variable_get :section
-    (json = @config[section]&.to_json) ? JSON.parse(json) : nil # Simple deep copy
-  end
-
-  def self.store_key(bind)
-    target_type = bind.local_variable_get :target_type
-    target      = bind.local_variable_get :target
-    jwks        = bind.local_variable_get :jwks
-    (@keys[target_type] ||= {})[target] = jwks
-  end
-
-  def self.load_key(bind)
-    target_type = bind.local_variable_get :target_type
-    target      = bind.local_variable_get :target
-    (json = @keys.dig(target_type, target)&.to_json) ? JSON.parse(json) : JWT::JWK::Set.new.export # Simple deep copy
-  end
-
-  def self.load_all_keys(bind)
-    target_type = bind.local_variable_get :target_type
-    result = JWT::JWK::Set.new
-    (@keys[target_type] || {}).values.map do |jwks|
-      new_jwks = (json = jwks&.to_json) ? JSON.parse(json) : JWT::JWK::Set.new.export # Simple deep copy
-      result.merge(JWT::JWK::Set.new(new_jwks))
-    end
-    result.export
-  end
-
-  PluginLoader.register 'CONFIGURATION_STORE', method(:write_config)
-  PluginLoader.register 'CONFIGURATION_LOAD',  method(:read_config)
-  PluginLoader.register 'KEYS_STORE',          method(:store_key)
-  PluginLoader.register 'KEYS_LOAD',           method(:load_key)
-  PluginLoader.register 'KEYS_LOAD_ALL',       method(:load_all_keys)
-end
-
-# Finally we load Omejdn
-require_relative '../omejdn'
-
-# Omejdn should be initialized with its default configuration now,
-# so you can use the core functionality to store data.
-# Alternatively, e.g. if that functionality is what you are testing,
-# you can also just access TestDB.config and TestDB.keys directly.
-
-# For convenience, a few functions to help with setting up the configuration
-# These do not depend on Omejdn and edit the TestDB directly
-# Call them inside setup and teardown
 class TestSetup
-  def self.setup(config: {}, clients: [], users: [])
-    TestDB.config['omejdn'].merge!(config)
-    TestDB.config['clients'] = TestSetup.clients
-    TestDB.config['users'] = TestSetup.users
+
+  def self.backup
+    @backup_clients = File.read './config/clients.yml' rescue nil
+    @backup_omejdn  = File.read './config/omejdn.yml'  rescue nil
+    File.open('./config/users_test.yml', 'w')   { |file| file.write(users.to_yaml) }
+    File.open('./config/clients.yml', 'w') { |file| file.write(clients.to_yaml) }
+    File.open('./config/omejdn.yml', 'w')  { |file| file.write(config.to_yaml) }
+  end
+
+  def self.setup
+    File.open('./keys/omejdn/omejdn_test.cert', 'w') do |file|
+      file.write (File.read './tests/test_resources/omejdn_test.cert')
+    end
+    File.open('./config/users_test.yml', 'w')   { |file| file.write(users.to_yaml) }
+    File.open('./config/clients.yml', 'w') { |file| file.write(clients.to_yaml) }
+    File.open('./config/omejdn.yml', 'w')  { |file| file.write(config.to_yaml) }
+  end
+
+  def self.teardown
+    File.delete './config/users_test.yml'
+    File.delete './keys/omejdn/omejdn_test.cert'
+    File.open('./config/clients.yml', 'w') { |file| file.write(@backup_clients) }
+    File.open('./config/omejdn.yml', 'w')  { |file| file.write(@backup_omejdn) }
   end
 
   def self.users
     [{
       'username' => 'testUser',
-      'attributes' => {
-        'omejdn' => 'write',
-        'openid' => true,
-        'profile' => true,
-        'email' => 'admin@example.com',
-        'asdfasf' => 'asdfasf',
-        'exampleKey' => 'exampleValue'
-      },
+      'attributes' => [
+        { 'key' => 'omejdn', 'value' => 'write' },
+        { 'key' => 'openid', 'value' => true },
+        { 'key' => 'profile', 'value' => true },
+        { 'key' => 'email', 'value' => 'admin@example.com' },
+        { 'key' => 'asdfasf', 'value' => 'asdfasf' },
+        { 'key' => 'exampleKey', 'value' => 'exampleValue' }
+      ],
       'password' => '$2a$12$s1UhO7bRO9b5fTTiRE4KxOR88vz3462Bxn8DGh/iDX26Neh95AHrC', # "mypassword"
       'backend' => 'yaml'
     },
     {
       'username' => 'testUser2',
-      'attributes' => {
-        'omejdn' => 'write'
-      },
+      'attributes' => [
+        { 'key' => 'omejdn', 'value' => 'write' }
+      ],
       'password' => '$2a$12$Be9.8qVsGOVpUFO4ebiMBel/TNetkPhnUkJ8KENHjHLiDG.IXi0Zi',
       'backend' => 'yaml'
     },
     {
       'username' => 'dynamic_claims',
-      'attributes' => {
-        'omejdn' => 'write',
-        'dynattribute' => {
-          'dynamic' => true
-        }
-      },
+      'attributes' => [
+        { 'key' => 'omejdn', 'value' => 'write' },
+        { 'key' => 'dynattribute', 'dynamic' => true }
+      ],
       'password' => '$2a$12$s1UhO7bRO9b5fTTiRE4KxOR88vz3462Bxn8DGh/iDX26Neh95AHrC',
       'backend' => 'yaml'
-    }]#.map { |u| User.from_h(u) }
+    }]
   end
 
   def self.clients
@@ -120,7 +71,7 @@ class TestSetup
       'grant_types' => ['authorization_code','client_credentials'],
       'scope' => ['omejdn:write', 'openid', 'email'],
       'redirect_uris' => 'http://localhost:4200',
-      'attributes' => {'omejdn' => 'write'}
+      'attributes' => [{'key'=> 'omejdn', 'value'=> 'write'}]
      },{
       'client_id' => 'client_secret_post_client',
       'client_secret' => 'post_secret',
@@ -128,28 +79,28 @@ class TestSetup
       'grant_types' => ['authorization_code','client_credentials'],
       'scope' => ['omejdn:write', 'openid', 'email'],
       'redirect_uris' => 'http://localhost:4200',
-      'attributes' => {'omejdn' => 'write'}
+      'attributes' => [{'key'=> 'omejdn', 'value'=> 'write'}]
      },{
       'client_id' => 'private_key_jwt_client',
       'token_endpoint_auth_method' => 'private_key_jwt',
       'grant_types' => ['authorization_code','client_credentials'],
       'scope' => ['omejdn:write', 'openid', 'email'],
       'redirect_uris' => 'http://localhost:4200',
-      'attributes' => {'omejdn' => 'write'}
+      'attributes' => [{'key'=> 'omejdn', 'value'=> 'write'}]
      },{
       'client_id' => 'publicClient',
       'token_endpoint_auth_method' => 'none',
       'grant_types' => ['authorization_code','client_credentials'],
       'scope' => ['omejdn:write'],
       'redirect_uris' => 'http://localhost:4200',
-      'attributes' => {'omejdn' => 'write'}
+      'attributes' => [{'key'=> 'omejdn', 'value'=> 'write'}]
      },{
       'client_id' => 'resourceClient',
       'token_endpoint_auth_method' => 'none',
       'grant_types' => ['authorization_code','client_credentials'],
       'scope' => ['omejdn:write'],
       'redirect_uris' => 'http://localhost:4200',
-      'attributes' => {'omejdn' => 'write'},
+      'attributes' => [{'key'=> 'omejdn', 'value'=> 'write'}],
       'resource' => ['http://example.org','http://localhost:4567/api']
      },{
       'client_id' => 'dynamic_claims',
@@ -158,12 +109,52 @@ class TestSetup
       'client_name' => 'omejdn admin ui',
       'scope' => ['omejdn:write'],
       'redirect_uris' => 'http://localhost:4200',
-      'attributes' => {
-        'dynattribute' => {
-          'dynamic' => true
+      'attributes' => [
+        { 'key' => 'dynattribute', 'dynamic' => true },
+        {'key'=> 'omejdn', 'value'=> 'write'}
+      ]
+    }]
+  end
+
+  def self.config
+    {
+      'issuer' => 'http://localhost:4567',
+      'front_url' => 'http://localhost:4567',
+      'bind_to' => '0.0.0.0:4567',
+      'environment' => 'test',
+      'openid' => true,
+      'default_audience' => 'TestServer',
+      'accept_audience' => 'http://localhost:4567',
+      'user_backend_default' => 'yaml',
+      'access_token' => {
+        'expiration' => 3600,
+        'algorithm' => 'RS256',
+      },
+      'id_token' => {
+        'expiration' => 3600,
+        'algorithm' => 'RS256',
+      },
+      'plugins' => {
+        'user_db' => {
+          'yaml' => {
+            'location' => 'config/users_test.yml'
+          }
         },
-        'omejdn' => 'write'
+        'api' => {
+          'admin_v1' => nil,
+          'user_selfservice_v1' => {
+            'allow_deletion' => true,
+            'allow_password_change' => true,
+            'editable_attributes' => ['name']
+          }
+        },
+        'claim_mapper' => {
+          'attribute' => nil
+        }
       }
-    }]#.map { |c| Client.from_h(c) }
+    }
   end
 end
+
+# Backup all Config Files
+TestSetup.backup

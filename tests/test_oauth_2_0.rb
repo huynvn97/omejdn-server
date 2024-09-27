@@ -17,9 +17,9 @@ class OAuth2Test < Test::Unit::TestCase
     @priv_key_ec256 = OpenSSL::PKey::EC.new File.read './tests/test_resources/ec256.pem'
     @priv_key_ec512 = OpenSSL::PKey::EC.new File.read './tests/test_resources/ec512.pem'
     @priv_key_rsa = OpenSSL::PKey::RSA.new File.read './tests/test_resources/rsa.pem'
-    @certificate_ec256 = OpenSSL::X509::Certificate.new File.read('./tests/test_resources/ec256.cert')
-    @certificate_ec512 = OpenSSL::X509::Certificate.new File.read('./tests/test_resources/ec512.cert')
-    @certificate_rsa = OpenSSL::X509::Certificate.new File.read('./tests/test_resources/rsa.cert')
+    @certificate_ec256 = File.read './tests/test_resources/ec256.cert'
+    @certificate_ec512 = File.read './tests/test_resources/ec512.cert'
+    @certificate_rsa = File.read './tests/test_resources/rsa.cert'
 
     TestSetup.setup
 
@@ -32,10 +32,9 @@ class OAuth2Test < Test::Unit::TestCase
     @testCertificate = File.read './tests/test_resources/testClient.pem'
   end
 
-  def certificate_to_JWKS(cert)
-    jwk = JWT::JWK.new cert.public_key, use: 'sig'
-    jwk[:x5c] = [Base64.strict_encode64(cert.to_der)]
-    JWT::JWK::Set.new(jwk).export
+  def teardown
+    TestSetup.teardown
+    @client_private_key_jwt.certificate = nil
   end
 
   # tries to request a token, returns the corresponding response or nil
@@ -56,7 +55,7 @@ class OAuth2Test < Test::Unit::TestCase
         })
       when 'client_secret_basic'
         headers.merge! ({
-          'HTTP_AUTHORIZATION' => "Basic #{Base64.strict_encode64("#{client.client_id}:#{client.metadata['client_secret']}")}"
+          'HTTP_AUTHORIZATION' => "Basic #{Base64.encode64("#{client.client_id}:#{client.metadata['client_secret']}")}"
         })
       when 'client_secret_post'
         params.merge! ({ :client_secret => client.metadata['client_secret'] })
@@ -67,8 +66,7 @@ class OAuth2Test < Test::Unit::TestCase
   end
 
   def get_private_key_jwt(client, alg, key, certificate)
-    client.metadata['jwks'] = certificate_to_JWKS certificate
-    client.save
+    client.certificate = certificate
     iss = client.client_id
     now = Time.new.to_i
     payload = { aud: Config.base_config.dig('issuer'), sub: iss, iss: iss, iat: now, nbf: now, exp: now + 3600 }
@@ -81,7 +79,7 @@ class OAuth2Test < Test::Unit::TestCase
 
   def extract_access_token(response)
     check_keys ["access_token","expires_in","token_type","scope"], response
-    assert_equal TestDB.config.dig('omejdn','access_token','expiration'), response["expires_in"]
+    assert_equal TestSetup.config.dig('access_token','expiration'), response["expires_in"]
     assert_equal "bearer", response["token_type"]
     assert_equal "omejdn:write", response["scope"]
 
@@ -89,11 +87,11 @@ class OAuth2Test < Test::Unit::TestCase
     assert last_response.ok?
     server_keys = JSON.parse(last_response.body)
     jwt = JWT.decode(response['access_token'],nil,true, {
-      algorithms: [TestDB.config.dig('omejdn','access_token','algorithm')],
+      algorithms: [TestSetup.config.dig('access_token','algorithm')],
       jwks: server_keys})
     check_keys ['typ','kid','alg'], jwt[1]
     assert_equal 'at+jwt', jwt.dig(1,'typ')
-    assert_equal TestDB.config.dig('omejdn','access_token','algorithm'), jwt.dig(1,'alg')
+    assert_equal TestSetup.config.dig('access_token','algorithm'), jwt.dig(1,'alg')
 
     return jwt[0]
   end
@@ -103,10 +101,10 @@ class OAuth2Test < Test::Unit::TestCase
     assert response
     at = extract_access_token response
 
-    check_keys ['scope','aud','iss','nbf','iat','jti','exp','client_id','sub'], at
+    check_keys ['scope','aud','iss','nbf','iat','jti','exp','client_id','sub','omejdn'], at
     assert_equal 'omejdn:write', at['scope']
-    assert_equal [TestDB.config.dig('omejdn','default_audience'), TestDB.config.dig('omejdn','front_url')+'/api'].flatten, at['aud']
-    assert_equal TestDB.config.dig('omejdn','issuer'), at['iss']
+    assert_equal [TestSetup.config.dig('default_audience'), TestSetup.config['front_url']+'/api'], at['aud']
+    assert_equal TestSetup.config.dig('issuer'), at['iss']
     assert       at['nbf'] <= Time.new.to_i
     assert_equal at['nbf'], at['iat']
     assert_equal at['nbf']+response["expires_in"], at['exp']
@@ -151,7 +149,7 @@ class OAuth2Test < Test::Unit::TestCase
     response = request_token 'client_credentials', @resource_client, 'omejdn:write', query_additions: resources
     assert response
     at = extract_access_token response
-    assert_equal ['http://example.org', TestDB.config.dig('omejdn','front_url')+'/api'], at['aud']
+    assert_equal ['http://example.org', TestSetup.config['front_url']+'/api'], at['aud']
   end
 
   def test_client_credentials_scope_rejection
@@ -161,24 +159,24 @@ class OAuth2Test < Test::Unit::TestCase
     assert_equal 'omejdn:write', at['scope']
   end
 
-#  def test_client_credentials_dynamic_claims
-#    claims = {
-#      '*' => {
-#        'dynattribute'=> { # should be included
-#          'value' => 'myvalue'
-#        },
-#        'nondynattribute'=> { # should get rejected
-#          'value' => 'myvalue'
-#        }
-#      }
-#    }
-#    query_additions = { 'claims' => claims.to_json }
-#    response = request_token 'client_credentials', @client_dyn_claims, 'omejdn:write', query_additions: query_additions
-#    assert response
-#    at = extract_access_token response
-#    assert_equal claims.dig('*','dynattribute','value'), at['dynattribute']
-#    assert_equal nil, at['nondynattribute']
-#  end
+  def test_client_credentials_dynamic_claims
+    claims = {
+      '*' => {
+        'dynattribute'=> { # should be included
+          'value' => 'myvalue'
+        },
+        'nondynattribute'=> { # should get rejected
+          'value' => 'myvalue'
+        }
+      }
+    }
+    query_additions = { 'claims' => claims.to_json }
+    response = request_token 'client_credentials', @client_dyn_claims, 'omejdn:write', query_additions: query_additions
+    assert response
+    at = extract_access_token response
+    assert_equal claims.dig('*','dynattribute','value'), at['dynattribute']
+    assert_equal nil, at['nondynattribute']
+  end
 
   # Returns an authorization code or nil
   def request_authorize(user, client, scope, state: 'teststate', query_additions: nil, pkce_challenge: nil)
@@ -216,7 +214,7 @@ class OAuth2Test < Test::Unit::TestCase
     code=response_params['code']
     return nil unless code
     assert_equal state, response_params['state']
-    assert_equal TestDB.config.dig('omejdn','issuer'), response_params['iss']
+    assert_equal TestSetup.config['issuer'], response_params['iss']
 
     code
   end
@@ -231,16 +229,17 @@ class OAuth2Test < Test::Unit::TestCase
     assert response
     at = extract_access_token response
 
-    check_keys ['scope','aud','iss','nbf','iat','jti','exp','client_id','sub'], at
+    check_keys ['scope','aud','iss','nbf','iat','jti','exp','client_id','sub', 'omejdn'], at
     assert_equal 'omejdn:write', at['scope']
-    assert_equal [TestDB.config.dig('omejdn','default_audience'), TestDB.config.dig('omejdn','front_url')+'/api'].flatten, at['aud']
-    assert_equal TestDB.config.dig('omejdn','issuer'), at['iss']
+    assert_equal [TestSetup.config.dig('default_audience'), TestSetup.config['front_url']+'/api'], at['aud']
+    assert_equal TestSetup.config.dig('issuer'), at['iss']
     assert       at['nbf'] <= Time.new.to_i
     assert_equal at['nbf'], at['iat']
     assert_equal at['nbf']+response["expires_in"], at['exp']
     assert       at['jti']
     assert_equal @public_client.client_id, at['client_id']
     assert_equal TestSetup.users.dig(0,'username'), at['sub']
+    assert_equal 'write', at['omejdn']
   end
 
   def test_authorization_flow_with_bad_resources
@@ -259,65 +258,63 @@ class OAuth2Test < Test::Unit::TestCase
     assert response
     at = extract_access_token response
 
-    check_keys ['scope','aud','iss','nbf','iat','jti','exp','client_id','sub'], at
+    check_keys ['scope','aud','iss','nbf','iat','jti','exp','client_id','sub', 'omejdn'], at
     assert_equal 'omejdn:write', at['scope']
-    assert_equal ['http://example.org', TestDB.config.dig('omejdn','front_url')+'/api'], at['aud']
-    assert_equal TestDB.config.dig('omejdn','issuer'), at['iss']
+    assert_equal ['http://example.org', TestSetup.config['front_url']+'/api'], at['aud']
+    assert_equal TestSetup.config.dig('issuer'), at['iss']
     assert       at['nbf'] <= Time.new.to_i
     assert_equal at['nbf'], at['iat']
     assert_equal at['nbf']+response["expires_in"], at['exp']
     assert       at['jti']
     assert_equal @resource_client.client_id, at['client_id']
     assert_equal TestSetup.users.dig(0,'username'), at['sub']
+    assert_equal 'write', at['omejdn']
   end
 
-#  def test_authorization_flow_with_claims
-#    claims = {
-#      '*' => {
-#        'dynattribute'=> { # should be included
-#          'value' => 'myvalue'
-#        },
-#        'nondynattribute'=> { # should get rejected
-#          'value' => 'myvalue'
-#        }
-#      }
-#    }
-#    query_additions = { 'claims' => claims.to_json }
-#    code = request_authorize TestSetup.users[2], @client_dyn_claims, 'omejdn:write', query_additions: query_additions
-#    assert code
-#    query_additions.merge!({
-#      'redirect_uri' => [*@client_dyn_claims.metadata['redirect_uris']].first
-#    })
-#    response = request_token 'authorization_code', @client_dyn_claims, 'omejdn:write', code: code, query_additions: query_additions
-#    assert response
-#    at = extract_access_token response
-#
-#    check_keys ['scope','aud','iss','nbf','iat','jti','exp','client_id','sub', 'dynattribute', 'omejdn_reserved'], at
-#    assert_equal 'omejdn:write', at['scope']
-#    assert_equal [TestDB.config.dig('omejdn','default_audience'), TestDB.config.dig('omejdn','front_url')+'/api'], at['aud']
-#    assert_equal TestDB.config.dig('omejdn','issuer'), at['iss']
-#    assert       at['nbf'] <= Time.new.to_i
-#    assert_equal at['nbf'], at['iat']
-#    assert_equal at['nbf']+response["expires_in"], at['exp']
-#    assert       at['jti']
-#    assert_equal @client_dyn_claims.client_id, at['client_id']
-#    assert_equal TestSetup.users.dig(2,'username'), at['sub']
-#    assert_equal 'write', at['omejdn']
-#    assert_equal claims.dig('*','dynattribute','value'), at['dynattribute']
-#  end
+  def test_authorization_flow_with_claims
+    claims = {
+      '*' => {
+        'dynattribute'=> { # should be included
+          'value' => 'myvalue'
+        },
+        'nondynattribute'=> { # should get rejected
+          'value' => 'myvalue'
+        }
+      }
+    }
+    query_additions = { 'claims' => claims.to_json }
+    code = request_authorize TestSetup.users[2], @client_dyn_claims, 'omejdn:write', query_additions: query_additions
+    assert code
+    query_additions.merge!({
+      'redirect_uri' => [*@client_dyn_claims.metadata['redirect_uris']].first
+    })
+    response = request_token 'authorization_code', @client_dyn_claims, 'omejdn:write', code: code, query_additions: query_additions
+    assert response
+    at = extract_access_token response
+
+    check_keys ['scope','aud','iss','nbf','iat','jti','exp','client_id','sub', 'omejdn', 'dynattribute', 'omejdn_reserved'], at
+    assert_equal 'omejdn:write', at['scope']
+    assert_equal [TestSetup.config.dig('default_audience'), TestSetup.config['front_url']+'/api'], at['aud']
+    assert_equal TestSetup.config.dig('issuer'), at['iss']
+    assert       at['nbf'] <= Time.new.to_i
+    assert_equal at['nbf'], at['iat']
+    assert_equal at['nbf']+response["expires_in"], at['exp']
+    assert       at['jti']
+    assert_equal @client_dyn_claims.client_id, at['client_id']
+    assert_equal TestSetup.users.dig(2,'username'), at['sub']
+    assert_equal 'write', at['omejdn']
+    assert_equal claims.dig('*','dynattribute','value'), at['dynattribute']
+  end
 
   def test_authorization_flow_with_request_object
     payload = {
-      'iss' => @client_private_key_jwt.client_id,
-      'aud' => 'http://localhost:4567',
       'response_type' => 'code',
       'client_id' => @client_private_key_jwt.client_id,
       'redirect_uri' => @client_private_key_jwt.metadata['redirect_uris'],
       'state' => 'testState',
       'scope' => 'omejdn:write'
     }
-    @client_private_key_jwt.metadata['jwks'] = certificate_to_JWKS @certificate_rsa
-    @client_private_key_jwt.save
+    @client_private_key_jwt.certificate = @certificate_rsa
     jwt = JWT.encode payload, @priv_key_rsa , 'RS256', { typ: 'at+jwt' }
     get  ('/authorize?request='+jwt+'&client_id='+@client_private_key_jwt.client_id), {}, {}
     # p last_response
@@ -327,16 +324,13 @@ class OAuth2Test < Test::Unit::TestCase
 
   def test_authorization_flow_with_request_uri
     payload = {
-      'iss' => @client_private_key_jwt.client_id,
-      'aud' => 'http://localhost:4567',
       'response_type' => 'code',
       'client_id' => @client_private_key_jwt.client_id,
       'redirect_uri' => @client_private_key_jwt.metadata['redirect_uris'],
       'state' => 'testState',
       'scope' => 'omejdn:write'
     }
-    @client_private_key_jwt.metadata['jwks'] = certificate_to_JWKS @certificate_rsa
-    @client_private_key_jwt.save
+    @client_private_key_jwt.certificate = @certificate_rsa
     jwt = JWT.encode payload, @priv_key_rsa , 'RS256', { typ: 'at+jwt' }
 
     post '/par', {
@@ -350,7 +344,6 @@ class OAuth2Test < Test::Unit::TestCase
     uri = (JSON.parse last_response.body)['request_uri']
     # GET /authorize
     get  ('/authorize?request_uri='+uri+'&client_id='+@client_private_key_jwt.client_id), {}, {}
-    # p last_response
     assert last_response.redirect?
     assert ["http://localhost:4567/consent", "http://localhost:4567/login"].include? last_response.original_headers['Location']
   end

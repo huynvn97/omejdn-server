@@ -1,6 +1,0 @@
-plugins:
-  user_selfservice:
-    editable_attributes:
-    - name
-    allow_deletion: true
-    allow_password_change: true

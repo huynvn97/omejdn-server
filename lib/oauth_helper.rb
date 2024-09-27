@@ -34,7 +34,7 @@ class OAuthHelper
     # Determine the client, trusting it will use the correct method to tell us
     client_id = params[:client_id]
     if auth_header.start_with? 'Basic'
-      client_id, client_secret = Base64.strict_decode64(auth_header.slice(6..-1)).split(':', 2)
+      client_id, client_secret = Base64.decode64(auth_header.slice(6..-1)).split(':', 2)
     end
     if params[:client_assertion_type] == 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
       client_id = JWT.decode(params[:client_assertion], nil, false).dig(0, 'sub') # Decode without verify
@@ -51,8 +51,7 @@ class OAuthHelper
               when 'client_secret_post'
                 params[:client_secret] == client.metadata['client_secret']
               when 'private_key_jwt'
-                token = client.decode_jwt params[:client_assertion]
-                token && token['sub'] == client.client_id
+                client.decode_jwt params[:client_assertion], true
               when 'none'
                 true
               else
@@ -63,93 +62,107 @@ class OAuthHelper
     client
   end
 
+  def self.retrieve_request_uri(request_uri, client)
+    raise OAuthError, 'invalid_request_uri' unless client.request_uri_allowed? request_uri
+
+    uri = URI(request_uri)
+    Net::HTTP.start(uri.host, uri.port, use_ssl: true) do |http|
+      res = http.request Net::HTTP::Get.new(uri)
+      res.body
+    end
+  rescue StandardError
+    nil
+  end
+
   # Retrieves the request parameters from the URL parameters, for authorization flows
-  def self.prepare_params(params, client)
+  def self.prepare_params(url_params, client)
     # We deviate from the OIDC spec in favor of RFC 9101
     # For example, we do not require specifying the scope outside the request parameter,
     # if it is provided within said parameter.
     # On the other hand, we require https!
-    jwt = nil
-    if (request_uri = params.delete(:request_uri))
-      raise OAuthError.new 'invalid_request', 'request{,_uri}, pick one.' if params.key? :request
+    jwt, params = nil
+    if url_params.key? :request_uri
+      raise OAuthError.new 'invalid_request', 'request{,_uri}, pick one.' if url_params.key? :request
 
-      if request_uri.start_with? 'urn:ietf:params:oauth:request_uri:'
+      if url_params[:request_uri].start_with? 'urn:ietf:params:oauth:request_uri:'
         # Retrieve token from Pushed Authorization Request Cache
-        params = Cache.par[request_uri]
-      elsif client.verify_uri('request_uris', request_uri)
+        params = Cache.par[url_params[:request_uri]]
+      elsif url_params[:request_uri].start_with? 'https://'
         # Retrieve remote token
-        jwt = Net::HTTP.get(URI(request_uri))
+        jwt = retrieve_request_uri url_params[:request_uri], client
       end
       raise OAuthError, 'invalid_request_uri' unless jwt || params
-    elsif (request = params.delete(:request))
-      jwt = request
+    elsif url_params.key? :request
+      jwt = url_params[:request]
       raise OAuthError, 'invalid_request_object' unless jwt
     end
 
     if jwt
-      params = client.decode_jwt jwt
-      params&.delete('iss')
-      params&.delete('aud')
-      params&.transform_keys!(&:to_sym)
+      params = client.decode_jwt jwt, false
+      raise OAuthError, 'invalid_client' unless params['client_id'] == url_params[:client_id]
     end
-    raise OAuthError, 'invalid_client' unless params&.dig(:client_id) == client.client_id
 
-    params
+    if params
+      url_params.delete(:request_uri)
+      url_params.delete(:request)
+      url_params.merge! params
+    end
+    url_params
   end
 
-  def self.add_nested_claim(hash, key, value)
-    key = key.split('/')
-    hash = (hash[key.shift] ||= {}) while key.length > 1
-    hash[key.shift] = value
+  def self.add_jwt_claim(jwt_body, key, value)
+    # Address is handled differently. For reasons...
+    if %w[street_address postal_code locality region country formatted].include?(key)
+      jwt_body['address'] ||= {}
+      jwt_body['address'][key] = value
+      return
+    end
+    jwt_body[key] = value
   end
 
-  def self.map_claims_to_userinfo(attrs, claims, scopes)
+  def self.map_claims_to_userinfo(attrs, claims, client, scopes)
     new_payload = {}
+    claims ||= {}
 
-    # Add attribute if it was requested indirectly through a scope
-    scope_mapping = Config.read_config CONFIG_SECTION_SCOPE_MAPPING, {}
-    scopes&.map { |s| scope_mapping[s] }&.compact&.flatten&.uniq&.each do |ak|
-      next unless (av = attrs[ak])
+    # Add attribute if it was requested indirectly through OIDC
+    # scope and scope is allowed for client.
+    allowed_scoped_attrs = client.allowed_scoped_attributes(scopes)
+    attrs.select { |a| allowed_scoped_attrs.include?(a['key']) }
+         .each { |a| add_jwt_claim(new_payload, a['key'], a['value']) }
+    return new_payload if claims.empty?
 
-      av = { 'value' => av } unless av.instance_of?(Hash)
-      add_nested_claim new_payload, ak, av if av.key? 'value'
-    end
+    # Add attribute if it was specifically requested through OIDC
+    # claims parameter.
+    attrs.each do |attr|
+      next unless (name = claims[attr['key']])
 
-    # Add attribute if it was specifically requested through OIDC claims parameter.
-    claims&.each do |ck, cv|
-      next unless (av = attrs[ck])
-
-      av = { 'value' => av } unless av.instance_of?(Hash)
-      if av['dynamic'] && (req_value = cv['value'] || cv.dig('values', 0))
-        add_nested_claim new_payload, ck, req_value
-      elsif av.key? 'value'
-        add_nested_claim new_payload, ck, av['value']
+      if    attr['dynamic'] && name['value']
+        add_jwt_claim(new_payload, attr['key'], name['value'])
+      elsif attr['dynamic'] && name['values']
+        add_jwt_claim(new_payload, attr['key'], name.dig('values', 0))
+      elsif attr['value']
+        add_jwt_claim(new_payload, attr['key'], attr['value'])
       end
     end
     new_payload
   end
 
   def self.validate_pkce(code_challenge, code_verifier, method)
-    expected_challenge = generate_pkce(code_verifier, method)
-    raise OAuthError.new 'invalid_request', 'Code verifier mismatch' unless expected_challenge == code_challenge
-  end
-
-  def self.generate_pkce(code_verifier, method)
     raise OAuthError.new 'invalid_request', "Unsupported verifier method: #{method}" unless method == 'S256'
     raise OAuthError.new 'invalid_request', 'Code verifier missing' if code_verifier.nil?
 
     digest = Digest::SHA256.new
     digest << code_verifier
-    digest.base64digest.gsub('+', '-').gsub('/', '_').gsub('=', '')
+    expected_challenge = digest.base64digest.gsub('+', '-').gsub('/', '_').gsub('=', '')
+    raise OAuthError.new 'invalid_request', 'Code verifier mismatch' unless expected_challenge == code_challenge
   end
 
-  def self.configuration_metadata_oidc_discovery(_base_config, path)
-    omejdn_keys = Keys.load_all_keys(KEYS_TARGET_OMEJDN).group_by { |k| k[:use] }
+  def self.configuration_metadata_oidc_discovery(base_config, path)
     metadata = {}
     metadata['userinfo_endpoint'] = "#{path}/userinfo"
     metadata['acr_values_supported'] = []
     metadata['subject_types_supported'] = ['public']
-    metadata['id_token_signing_alg_values_supported'] = omejdn_keys['sig']&.map { |k| k[:alg] }&.uniq || ['none']
+    metadata['id_token_signing_alg_values_supported'] = [*base_config.dig('id_token', 'algorithm')]
     metadata['id_token_encryption_alg_values_supported'] = ['none']
     metadata['id_token_encryption_enc_values_supported'] = ['none']
     metadata['userinfo_signing_alg_values_supported'] = ['none']
@@ -176,7 +189,7 @@ class OAuthHelper
     metadata['token_endpoint'] = "#{path}/token"
     metadata['jwks_uri'] = "#{path}/jwks.json"
     # metadata["registration_endpoint"] = "#{host}/FIXME"
-    metadata['scopes_supported'] = Config.read_config(CONFIG_SECTION_SCOPE_MAPPING, {}).map { |m| m[0] }
+    metadata['scopes_supported'] = Config.scope_mapping_config.map { |m| m[0] }
     metadata['scopes_supported'] << 'openid' if Config.base_config['openid']
     metadata['response_types_supported'] = ['code']
     metadata['response_modes_supported'] = %w[query fragment form_post]
@@ -232,5 +245,32 @@ class OAuthHelper
 
     # OpenID Connect Discovery 1.0
     metadata.merge!(configuration_metadata_oidc_discovery(base_config, path))
+
+    # Signing as per RFC 8414
+    metadata['signed_metadata'] = sign_metadata metadata
+    metadata
+  end
+
+  def self.sign_metadata(metadata)
+    to_sign = metadata.merge
+    to_sign['iss'] = to_sign['issuer']
+    key_pair = Keys.load_skey
+    JWT.encode to_sign, key_pair['sk'], 'RS256', { kid: key_pair['kid'] }
+  end
+
+  def self.adapt_requested_claims(req_claims)
+    # https://tools.ietf.org/id/draft-spencer-oauth-claims-00.html#rfc.section.3
+    known_sinks = %w[access_token id_token userinfo]
+    default_sinks = ['access_token']
+    known_sinks.each do |sink|
+      req_claims[sink] ||= {}
+      req_claims[sink].merge!(req_claims['*'] || {})
+    end
+    default_sinks.each do |sink|
+      req_claims[sink].merge!(req_claims['?'] || {})
+    end
+    req_claims.delete('*')
+    req_claims.delete('?')
+    req_claims
   end
 end

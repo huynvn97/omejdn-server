@@ -1,11 +1,9 @@
 #!/bin/sh
 
-testfiles="$(ls -1 tests/test_*.rb; ls -1 tests/plugins/test*.rb)"
+testfiles="$(ls -1 tests/test_*.rb)"
 
 for file in $testfiles; do
-	echo "Testing $file"
-	ruby "$file" --use-color
-	# bundle exec ruby "$file" --use-color
+	bundle exec ruby "$file"
 	if [ "$?" -ne "0" ]; then
 		echo "Error: Test $file unsucessful"
 		exit 1
